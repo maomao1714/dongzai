@@ -1,4 +1,4 @@
-name: 栋仔主题编译优化版33
+name: 栋仔主题编译优化版66
 
 on:
   workflow_dispatch:
@@ -28,50 +28,14 @@ jobs:
     - name: 初始磁盘空间检查
       timeout-minutes: 15
       run: |
-        echo "=== 初始磁盘空间检查开始 ==="
-        echo "设置15分钟超时，包含假死检测机制"
-        
-        # 创建后台进程监控假死状态
-        {
-          while true; do
-            echo "[$(date +%H:%M:%S)] 磁盘检查进程运行中..."
-            sleep 30
-          done
-        } &
-        MONITOR_PID=$!
-        
-        # 设置假死检测函数
-        cleanup() {
-          echo "检测到超时或假死，终止进程..."
-          kill $MONITOR_PID 2>/dev/null || true
-          exit 1
-        }
-        trap cleanup TERM INT
-        
         echo "=== 初始磁盘空间状态 ==="
         df -h
-        
         echo "开始清理系统缓存..."
-        # 使用后台任务并行执行清理操作
-        (sudo apt-get clean > /dev/null 2>&1) &
-        CLEAN_PID1=$!
-        
-        (sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc 2>/dev/null || true) &
-        CLEAN_PID2=$!
-        
-        (sudo rm -rf /usr/local/lib/node_modules 2>/dev/null || true) &
-        CLEAN_PID3=$!
-        
-        # 等待所有清理任务完成
-        wait $CLEAN_PID1 $CLEAN_PID2 $CLEAN_PID3
-        
-        echo "缓存清理完成"
+        sudo apt-get clean
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc 2>/dev/null || true
+        sudo rm -rf /usr/local/lib/node_modules 2>/dev/null || true
         echo "=== 清理后磁盘空间 ==="
         df -h
-        
-        # 终止监控进程
-        kill $MONITOR_PID 2>/dev/null || true
-        echo "✅ 磁盘空间检查完成"
 
     - name: 验证配置文件
       run: |
@@ -80,13 +44,15 @@ jobs:
           exit 1
         fi
         echo "✅ 找到配置文件"
+        echo "=== 配置文件前几行预览 ==="
+        head -20 .config
 
     - name: 安装编译环境
       timeout-minutes: 10
       run: |
         echo "安装编译环境..."
         sudo apt-get update
-        sudo apt-get install -y build-essential git libncurses5-dev libssl-dev python3 unzip wget curl
+        sudo apt-get install -y build-essential git libncurses5-dev libssl-dev python3 unzip wget curl rsync
         echo "✅ 环境安装完成"
         sudo apt-get clean
         sudo rm -rf /var/lib/apt/lists/*
@@ -111,8 +77,9 @@ jobs:
           exit 1
         fi
         echo "开始更新软件源..."
-        $BUILD_DIR/scripts/feeds update -a > /dev/null 2>&1
-        $BUILD_DIR/scripts/feeds install -a > /dev/null 2>&1
+        cd $BUILD_DIR
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
         echo "✅ 软件源更新完成"
 
     - name: 处理Node.js问题
@@ -141,39 +108,39 @@ jobs:
           exit 1
         fi
         
-        # 使用echo命令创建Makefile，避免heredoc问题
-        echo "include \$(TOPDIR)/rules.mk" > "$THEME_DIR/Makefile"
-        echo "" >> "$THEME_DIR/Makefile"
-        echo "LUCI_TITLE:=栋仔主题" >> "$THEME_DIR/Makefile"
-        echo "LUCI_DEPENDS:=" >> "$THEME_DIR/Makefile"
-        echo "PKG_VERSION:=1.0" >> "$THEME_DIR/Makefile"
-        echo "PKG_RELEASE:=1" >> "$THEME_DIR/Makefile"
-        echo "" >> "$THEME_DIR/Makefile"
-        echo "include \$(INCLUDE_DIR)/package.mk" >> "$THEME_DIR/Makefile"
-        echo "" >> "$THEME_DIR/Makefile"
-        echo "define Package/luci-theme-dongzhai" >> "$THEME_DIR/Makefile"
-        echo "  \$(call Package/luci/webtemplate)" >> "$THEME_DIR/Makefile"
-        echo "  TITLE:=栋仔主题" >> "$THEME_DIR/Makefile"
-        echo "  DEPENDS:=+luci-compat" >> "$THEME_DIR/Makefile"
-        echo "endef" >> "$THEME_DIR/Makefile"
-        echo "" >> "$THEME_DIR/Makefile"
-        echo "define Package/luci-theme-dongzhai/description" >> "$THEME_DIR/Makefile"
-        echo "  栋仔个性化主题" >> "$THEME_DIR/Makefile"
-        echo "endef" >> "$THEME_DIR/Makefile"
-        echo "" >> "$THEME_DIR/Makefile"
-        echo "define Build/Configure" >> "$THEME_DIR/Makefile"
-        echo "endef" >> "$THEME_DIR/Makefile"
-        echo "" >> "$THEME_DIR/Makefile"
-        echo "define Build/Compile" >> "$THEME_DIR/Makefile"
-        echo "endef" >> "$THEME_DIR/Makefile"
-        echo "" >> "$THEME_DIR/Makefile"
-        echo "define Package/luci-theme-dongzhai/install" >> "$THEME_DIR/Makefile"
-        echo "	\$(INSTALL_DIR) \$(1)/www/luci-static/dongzhai" >> "$THEME_DIR/Makefile"
-        echo "	[ -d ./files ] && \$(CP) ./files/* \$(1)/www/luci-static/dongzhai/" >> "$THEME_DIR/Makefile"
-        echo "endef" >> "$THEME_DIR/Makefile"
-        echo "" >> "$THEME_DIR/Makefile"
-        echo "\$(eval \$(call BuildPackage,luci-theme-dongzhai))" >> "$THEME_DIR/Makefile"
-        
+        cat > "$THEME_DIR/Makefile" << 'EOF'
+include $(TOPDIR)/rules.mk
+
+LUCI_TITLE:=栋仔主题
+LUCI_DEPENDS:=
+PKG_VERSION:=1.0
+PKG_RELEASE:=1
+
+include $(INCLUDE_DIR)/package.mk
+
+define Package/luci-theme-dongzhai
+  $(call Package/luci/webtemplate)
+  TITLE:=栋仔主题
+  DEPENDS:=+luci-compat
+endef
+
+define Package/luci-theme-dongzhai/description
+  栋仔个性化主题
+endef
+
+define Build/Configure
+endef
+
+define Build/Compile
+endef
+
+define Package/luci-theme-dongzhai/install
+	$(INSTALL_DIR) $(1)/www/luci-static/dongzhai
+	[ -d ./files ] && $(CP) ./files/* $(1)/www/luci-static/dongzhai/
+endef
+
+$(eval $(call BuildPackage,luci-theme-dongzhai))
+EOF
         echo "✅ 主题Makefile创建完成"
 
     - name: 创建主题CSS
@@ -184,71 +151,103 @@ jobs:
           exit 1
         fi
         
-        # 使用echo命令创建CSS，避免heredoc问题
-        echo "/* 栋仔主题样式 */" > "$CSS_DIR/style.css"
-        echo ".header .fill .brand {" >> "$CSS_DIR/style.css"
-        echo "    color: #ff6600;" >> "$CSS_DIR/style.css"
-        echo "    font-weight: bold;" >> "$CSS_DIR/style.css"
-        echo "    font-size: 18px;" >> "$CSS_DIR/style.css"
-        echo "}" >> "$CSS_DIR/style.css"
-        echo ".sidebar {" >> "$CSS_DIR/style.css"
-        echo "    background: #2c3e50;" >> "$CSS_DIR/style.css"
-        echo "}" >> "$CSS_DIR/style.css"
-        echo ".sidebar .nav > li > a {" >> "$CSS_DIR/style.css"
-        echo "    color: #ecf0f1;" >> "$CSS_DIR/style.css"
-        echo "}" >> "$CSS_DIR/style.css"
-        echo ".btn-primary {" >> "$CSS_DIR/style.css"
-        echo "    background-color: #ff6600;" >> "$CSS_DIR/style.css"
-        echo "    border-color: #ff6600;" >> "$CSS_DIR/style.css"
-        echo "}" >> "$CSS_DIR/style.css"
-        
+        cat > "$CSS_DIR/style.css" << 'EOF'
+/* 栋仔主题样式 */
+.header .fill .brand {
+    color: #ff6600;
+    font-weight: bold;
+    font-size: 18px;
+}
+.sidebar {
+    background: #2c3e50;
+}
+.sidebar .nav > li > a {
+    color: #ecf0f1;
+}
+.btn-primary {
+    background-color: #ff6600;
+    border-color: #ff6600;
+}
+EOF
         echo "✅ 主题CSS创建完成"
 
     - name: 应用配置
-      timeout-minutes: 3
+      timeout-minutes: 5
       run: |
         if [ ! -d "$BUILD_DIR" ]; then
           echo "❌ 错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
         
+        echo "=== 当前磁盘空间 ==="
+        df -h
+        
         echo "复制配置文件..."
-        cp .config "$BUILD_DIR/.config"
+        if [ -f ".config" ]; then
+          cp .config "$BUILD_DIR/.config"
+          echo "✅ 配置文件复制完成"
+        else
+          echo "⚠️ 无自定义配置文件，使用默认配置"
+        fi
         
         echo "添加主题配置..."
-        echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> "$BUILD_DIR/.config"
-        echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> "$BUILD_DIR/.config"
+        cd "$BUILD_DIR"
         
-        echo "禁用Node.js相关包..." >> "$BUILD_DIR/.config"
-        echo "# CONFIG_PACKAGE_node is not set" >> "$BUILD_DIR/.config"
-        echo "# CONFIG_PACKAGE_node-npm is not set" >> "$BUILD_DIR/.config"
-        echo "# CONFIG_PACKAGE_node-yarn is not set" >> "$BUILD_DIR/.config"
+        # 使用scripts/config工具安全添加配置
+        if [ -f "scripts/config" ]; then
+          ./scripts/config --enable PACKAGE_luci-theme-dongzhai
+          ./scripts/config --set-str DEFAULT_luci-theme-dongzhai y
+        else
+          # 备用方法：直接追加到.config
+          echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> .config
+          echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> .config
+        fi
         
-        echo "添加空间优化配置..." >> "$BUILD_DIR/.config"
-        echo "# CONFIG_KERNEL_DEBUG_INFO is not set" >> "$BUILD_DIR/.config"
-        echo "CONFIG_KERNEL_DEBUG_INFO_REDUCED=n" >> "$BUILD_DIR/.config"
-        echo "# CONFIG_DEBUG is not set" >> "$BUILD_DIR/.config"
-        echo "CONFIG_USE_STRIP=y" >> "$BUILD_DIR/.config"
-        echo "CONFIG_USE_SSTRIP=n" >> "$BUILD_DIR/.config"
-        echo "# CONFIG_BUILD_NLS is not set" >> "$BUILD_DIR/.config"
-        echo "CONFIG_CLEAN_IPKG=y" >> "$BUILD_DIR/.config"
-        echo "CONFIG_CCACHE=n" >> "$BUILD_DIR/.config"
-        echo "# CONFIG_SDK is not set" >> "$BUILD_DIR/.config"
+        echo "禁用Node.js相关包..."
+        echo "# CONFIG_PACKAGE_node is not set" >> .config
+        echo "# CONFIG_PACKAGE_node-npm is not set" >> .config
+        echo "# CONFIG_PACKAGE_node-yarn is not set" >> .config
+        
+        echo "添加空间优化配置..."
+        echo "# CONFIG_KERNEL_DEBUG_INFO is not set" >> .config
+        echo "CONFIG_KERNEL_DEBUG_INFO_REDUCED=n" >> .config
+        echo "# CONFIG_DEBUG is not set" >> .config
+        echo "CONFIG_USE_STRIP=y" >> .config
+        echo "CONFIG_USE_SSTRIP=n" >> .config
+        echo "# CONFIG_BUILD_NLS is not set" >> .config
+        echo "CONFIG_CLEAN_IPKG=y" >> .config
+        echo "CONFIG_CCACHE=n" >> .config
+        echo "# CONFIG_SDK is not set" >> .config
+        
+        echo "=== 配置预览（前50行）==="
+        head -50 .config
         
         echo "应用配置..."
-        make -C "$BUILD_DIR" defconfig > /dev/null 2>&1
-        echo "✅ 配置应用完成"
+        if make defconfig; then
+          echo "✅ 配置应用完成"
+        else
+          echo "❌ 配置应用失败，显示详细错误..."
+          make defconfig V=s
+          exit 1
+        fi
 
     - name: 编译前深度清理
-      timeout-minutes: 3
+      timeout-minutes: 5
       run: |
         echo "=== 编译前磁盘空间 ==="
         df -h
         echo "执行深度清理..."
+        
+        # 更彻底的清理
+        sudo apt-get autoremove -y
         sudo apt-get clean
         sudo rm -rf /var/cache/apt/archives/*
-        sudo rm -rf /tmp/*
         sudo rm -rf /var/lib/apt/lists/*
+        sudo rm -rf /tmp/*
+        sudo rm -rf /var/tmp/*
+        
+        # 清理日志文件
+        sudo find /var/log -type f -name "*.log" -exec truncate -s 0 {} \;
         
         # 移除.git目录释放更多空间
         if [ -d "$BUILD_DIR/.git" ]; then
@@ -256,20 +255,37 @@ jobs:
           rm -rf "$BUILD_DIR/.git"
         fi
         
+        # 清理构建缓存
+        if [ -d "$BUILD_DIR/tmp" ]; then
+          rm -rf "$BUILD_DIR/tmp"
+        fi
+        
         echo "=== 清理后磁盘空间 ==="
         df -h
 
     - name: 下载软件包
-      timeout-minutes: 15
+      timeout-minutes: 20
       run: |
         if [ ! -d "$BUILD_DIR" ]; then
           echo "❌ 错误：$BUILD_DIR 目录不存在"
           exit 1
         fi
+        
         THREADS=${{ github.event.inputs.compile_threads }}
         echo "开始下载软件包（使用 $THREADS 线程）..."
-        make -C "$BUILD_DIR" download -j$THREADS
-        echo "✅ 软件包下载完成"
+        echo "=== 下载前磁盘空间 ==="
+        df -h
+        
+        cd "$BUILD_DIR"
+        if make download -j$THREADS; then
+          echo "✅ 软件包下载完成"
+        else
+          echo "⚠️ 下载失败，尝试单线程重试..."
+          make download -j1 V=s
+        fi
+        
+        echo "=== 下载后磁盘空间 ==="
+        df -h
 
     - name: 编译固件
       timeout-minutes: 300
@@ -284,16 +300,24 @@ jobs:
         echo "=== 当前磁盘空间 ==="
         df -h
         
-        # 强制使用单线程编译避免磁盘空间问题
+        cd "$BUILD_DIR"
+        
+        # 检查磁盘空间，如果不足则清理
+        AVAILABLE_SPACE=$(df /dev/root --output=avail | tail -1)
+        if [ "$AVAILABLE_SPACE" -lt 1048576 ]; then  # 小于1GB
+          echo "⚠️ 磁盘空间不足，执行紧急清理..."
+          make dirclean
+          sudo rm -rf /tmp/*
+          df -h
+        fi
+        
         echo "🔧 使用单线程编译确保稳定性..."
-        if make -C "$BUILD_DIR" -j1; then
+        if make -j1; then
           echo "🎉 编译成功！"
         else
           echo "⚠️ 编译失败，使用详细模式重试..."
-          make -C "$BUILD_DIR" -j1 V=s
+          make -j1 V=s
         fi
-        
-        echo "✅ 编译流程完成"
 
     - name: 检查生成的文件
       run: |
@@ -303,14 +327,7 @@ jobs:
         fi
         
         echo "🔍 查找生成的固件文件:"
-        FIRMWARE_FILES=$(find "$BUILD_DIR/bin/targets/" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null | head -10)
-        
-        if [ -n "$FIRMWARE_FILES" ]; then
-          echo "✅ 找到以下固件文件:"
-          echo "$FIRMWARE_FILES"
-        else
-          echo "❌ 未找到固件文件"
-        fi
+        find "$BUILD_DIR/bin/targets/" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null | head -10
         
         echo "=== 最终磁盘空间 ==="
         df -h
@@ -320,14 +337,14 @@ jobs:
       run: |
         echo "📦 打包固件文件..."
         cd $BUILD_DIR/bin/targets/
-        zip -r ../../firmware.zip . -i "*.bin" "*.img" "*.gz" 2>/dev/null || echo "⚠️ 部分文件打包失败，继续执行..."
-        cd ../../..
-        
-        if [ -f "$BUILD_DIR/firmware.zip" ]; then
+        if zip -r ../../firmware.zip . -i "*.bin" "*.img" "*.gz" 2>/dev/null; then
           echo "✅ 固件打包完成"
           ls -lh "$BUILD_DIR/firmware.zip"
         else
           echo "❌ 固件打包失败"
+          # 尝试手动复制文件
+          mkdir -p /tmp/firmware_backup
+          find . -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) -exec cp {} /tmp/firmware_backup/ \; 2>/dev/null || true
         fi
 
     - name: 上传固件

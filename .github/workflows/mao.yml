@@ -264,7 +264,7 @@ EOF
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: 栋仔固件
+        name: firmware
         path: ${{ env.BUILD_DIR }}/bin/targets/**/*
         retention-days: 30
 

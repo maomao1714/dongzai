@@ -1,0 +1,8 @@
+/* 栋仔主题基础样式 */
+.header .fill .brand {
+    color: #ff6600;
+    font-weight: bold;
+}
+.sidebar {
+    background-color: #2c3e50;
+}

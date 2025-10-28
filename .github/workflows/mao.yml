@@ -1,4 +1,4 @@
-name: 栋仔主题编译优化版22
+name: 栋仔主题编译优化版33
 
 on:
   workflow_dispatch:
@@ -166,4 +166,189 @@ jobs:
         echo "" >> "$THEME_DIR/Makefile"
         echo "define Build/Compile" >> "$THEME_DIR/Makefile"
         echo "endef" >> "$THEME_DIR/Makefile"
-        echo "" >> "$THEME_DIR/Makefile
+        echo "" >> "$THEME_DIR/Makefile"
+        echo "define Package/luci-theme-dongzhai/install" >> "$THEME_DIR/Makefile"
+        echo "	\$(INSTALL_DIR) \$(1)/www/luci-static/dongzhai" >> "$THEME_DIR/Makefile"
+        echo "	[ -d ./files ] && \$(CP) ./files/* \$(1)/www/luci-static/dongzhai/" >> "$THEME_DIR/Makefile"
+        echo "endef" >> "$THEME_DIR/Makefile"
+        echo "" >> "$THEME_DIR/Makefile"
+        echo "\$(eval \$(call BuildPackage,luci-theme-dongzhai))" >> "$THEME_DIR/Makefile"
+        
+        echo "✅ 主题Makefile创建完成"
+
+    - name: 创建主题CSS
+      run: |
+        CSS_DIR="$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css"
+        if [ ! -d "$CSS_DIR" ]; then
+          echo "❌ 错误：CSS目录不存在"
+          exit 1
+        fi
+        
+        # 使用echo命令创建CSS，避免heredoc问题
+        echo "/* 栋仔主题样式 */" > "$CSS_DIR/style.css"
+        echo ".header .fill .brand {" >> "$CSS_DIR/style.css"
+        echo "    color: #ff6600;" >> "$CSS_DIR/style.css"
+        echo "    font-weight: bold;" >> "$CSS_DIR/style.css"
+        echo "    font-size: 18px;" >> "$CSS_DIR/style.css"
+        echo "}" >> "$CSS_DIR/style.css"
+        echo ".sidebar {" >> "$CSS_DIR/style.css"
+        echo "    background: #2c3e50;" >> "$CSS_DIR/style.css"
+        echo "}" >> "$CSS_DIR/style.css"
+        echo ".sidebar .nav > li > a {" >> "$CSS_DIR/style.css"
+        echo "    color: #ecf0f1;" >> "$CSS_DIR/style.css"
+        echo "}" >> "$CSS_DIR/style.css"
+        echo ".btn-primary {" >> "$CSS_DIR/style.css"
+        echo "    background-color: #ff6600;" >> "$CSS_DIR/style.css"
+        echo "    border-color: #ff6600;" >> "$CSS_DIR/style.css"
+        echo "}" >> "$CSS_DIR/style.css"
+        
+        echo "✅ 主题CSS创建完成"
+
+    - name: 应用配置
+      timeout-minutes: 3
+      run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        
+        echo "复制配置文件..."
+        cp .config "$BUILD_DIR/.config"
+        
+        echo "添加主题配置..."
+        echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> "$BUILD_DIR/.config"
+        echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> "$BUILD_DIR/.config"
+        
+        echo "禁用Node.js相关包..." >> "$BUILD_DIR/.config"
+        echo "# CONFIG_PACKAGE_node is not set" >> "$BUILD_DIR/.config"
+        echo "# CONFIG_PACKAGE_node-npm is not set" >> "$BUILD_DIR/.config"
+        echo "# CONFIG_PACKAGE_node-yarn is not set" >> "$BUILD_DIR/.config"
+        
+        echo "添加空间优化配置..." >> "$BUILD_DIR/.config"
+        echo "# CONFIG_KERNEL_DEBUG_INFO is not set" >> "$BUILD_DIR/.config"
+        echo "CONFIG_KERNEL_DEBUG_INFO_REDUCED=n" >> "$BUILD_DIR/.config"
+        echo "# CONFIG_DEBUG is not set" >> "$BUILD_DIR/.config"
+        echo "CONFIG_USE_STRIP=y" >> "$BUILD_DIR/.config"
+        echo "CONFIG_USE_SSTRIP=n" >> "$BUILD_DIR/.config"
+        echo "# CONFIG_BUILD_NLS is not set" >> "$BUILD_DIR/.config"
+        echo "CONFIG_CLEAN_IPKG=y" >> "$BUILD_DIR/.config"
+        echo "CONFIG_CCACHE=n" >> "$BUILD_DIR/.config"
+        echo "# CONFIG_SDK is not set" >> "$BUILD_DIR/.config"
+        
+        echo "应用配置..."
+        make -C "$BUILD_DIR" defconfig > /dev/null 2>&1
+        echo "✅ 配置应用完成"
+
+    - name: 编译前深度清理
+      timeout-minutes: 3
+      run: |
+        echo "=== 编译前磁盘空间 ==="
+        df -h
+        echo "执行深度清理..."
+        sudo apt-get clean
+        sudo rm -rf /var/cache/apt/archives/*
+        sudo rm -rf /tmp/*
+        sudo rm -rf /var/lib/apt/lists/*
+        
+        # 移除.git目录释放更多空间
+        if [ -d "$BUILD_DIR/.git" ]; then
+          echo "移除.git目录节省空间..."
+          rm -rf "$BUILD_DIR/.git"
+        fi
+        
+        echo "=== 清理后磁盘空间 ==="
+        df -h
+
+    - name: 下载软件包
+      timeout-minutes: 15
+      run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        THREADS=${{ github.event.inputs.compile_threads }}
+        echo "开始下载软件包（使用 $THREADS 线程）..."
+        make -C "$BUILD_DIR" download -j$THREADS
+        echo "✅ 软件包下载完成"
+
+    - name: 编译固件
+      timeout-minutes: 300
+      run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        
+        THREADS=${{ github.event.inputs.compile_threads }}
+        echo "开始编译固件..."
+        echo "=== 当前磁盘空间 ==="
+        df -h
+        
+        # 强制使用单线程编译避免磁盘空间问题
+        echo "🔧 使用单线程编译确保稳定性..."
+        if make -C "$BUILD_DIR" -j1; then
+          echo "🎉 编译成功！"
+        else
+          echo "⚠️ 编译失败，使用详细模式重试..."
+          make -C "$BUILD_DIR" -j1 V=s
+        fi
+        
+        echo "✅ 编译流程完成"
+
+    - name: 检查生成的文件
+      run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        
+        echo "🔍 查找生成的固件文件:"
+        FIRMWARE_FILES=$(find "$BUILD_DIR/bin/targets/" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null | head -10)
+        
+        if [ -n "$FIRMWARE_FILES" ]; then
+          echo "✅ 找到以下固件文件:"
+          echo "$FIRMWARE_FILES"
+        else
+          echo "❌ 未找到固件文件"
+        fi
+        
+        echo "=== 最终磁盘空间 ==="
+        df -h
+
+    - name: 打包固件文件
+      if: success()
+      run: |
+        echo "📦 打包固件文件..."
+        cd $BUILD_DIR/bin/targets/
+        zip -r ../../firmware.zip . -i "*.bin" "*.img" "*.gz" 2>/dev/null || echo "⚠️ 部分文件打包失败，继续执行..."
+        cd ../../..
+        
+        if [ -f "$BUILD_DIR/firmware.zip" ]; then
+          echo "✅ 固件打包完成"
+          ls -lh "$BUILD_DIR/firmware.zip"
+        else
+          echo "❌ 固件打包失败"
+        fi
+
+    - name: 上传固件
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: openwrt-firmware
+        path: ${{ env.BUILD_DIR }}/firmware.zip
+        retention-days: 30
+
+    - name: 上传原始文件（备用）
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: firmware-backup
+        path: ${{ env.BUILD_DIR }}/bin/targets/
+        retention-days: 7
+
+    - name: 完成提示
+      run: |
+        echo "🎊 编译流程全部完成！"
+        echo "📥 下载链接将在Artifacts区域显示"
+        echo "📦 主文件：openwrt-firmware.zip"
+        echo "📁 备用文件：firmware-backup"

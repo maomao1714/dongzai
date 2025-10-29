@@ -1,0 +1,501 @@
+name: 栋仔主题编译优化版
+
+on:
+  workflow_dispatch:
+    inputs:
+      compile_threads:
+        description: '编译线程数'
+        required: false
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '2'
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  BUILD_DIR: lede
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+    - name: 检查代码和配置
+      uses: actions/checkout@v4
+
+    - name: 初始磁盘空间检查
+      timeout-minutes: 15
+      run: |
+        echo "=== 初始磁盘空间状态 ==="
+        df -h
+        echo "开始清理系统缓存..."
+        sudo apt-get clean
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc 2>/dev/null || true
+        sudo rm -rf /usr/local/lib/node_modules 2>/dev/null || true
+        echo "=== 清理后磁盘空间 ==="
+        df -h
+
+    - name: 验证配置文件
+      run: |
+        if [ ! -f ".config" ]; then
+          echo "❌ 错误：缺少配置文件 .config"
+          echo "请在工作流运行前上传 .config 文件到仓库根目录"
+          exit 1
+        else
+          echo "✅ 找到配置文件"
+          echo "=== 配置文件信息 ==="
+          echo "文件大小: $(du -h .config | cut -f1)"
+          echo "=== 配置文件前30行预览 ==="
+          head -30 .config
+          echo "=== 配置文件后10行预览 ==="
+          tail -10 .config
+        fi
+
+    - name: 安装编译环境
+      timeout-minutes: 15
+      run: |
+        echo "安装编译环境..."
+        
+        # 更新软件源
+        sudo apt update
+        
+        # 安装基础编译工具
+        sudo apt install -y build-essential git libncurses5-dev libssl-dev python3 unzip wget curl rsync file
+        
+        # 安装Python 2.7（OpenWrt编译需要）
+        echo "安装Python 2.7..."
+        sudo apt install -y python2.7
+        # 创建python2符号链接
+        sudo ln -sf /usr/bin/python2.7 /usr/bin/python2
+        # 设置python默认为python3，但确保python2可用
+        sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 1
+        sudo update-alternatives --install /usr/bin/python python /usr/bin/python2.7 2
+        
+        echo "✅ 环境安装完成"
+        
+        # 验证Python版本
+        echo "=== Python版本信息 ==="
+        python --version
+        python2 --version
+        python3 --version
+        
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
+
+    - name: 克隆源码
+      timeout-minutes: 5
+      run: |
+        if [ -d "$BUILD_DIR" ]; then
+          echo "删除已存在的 $BUILD_DIR 目录"
+          rm -rf $BUILD_DIR
+        fi
+        echo "开始克隆源码..."
+        git clone --depth=1 $REPO_URL $BUILD_DIR
+        echo "✅ 源码克隆完成"
+        df -h
+
+    - name: 更新软件源
+      timeout-minutes: 5
+      run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        echo "开始更新软件源..."
+        cd $BUILD_DIR
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        echo "✅ 软件源更新完成"
+
+    - name: 创建主题目录
+      run: |
+        mkdir -p "$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css"
+        echo "✅ 主题目录创建完成"
+
+    - name: 创建主题Makefile
+      run: |
+        THEME_DIR="$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai"
+        if [ ! -d "$THEME_DIR" ]; then
+          echo "❌ 错误：主题目录不存在"
+          exit 1
+        fi
+        
+        # 使用echo创建Makefile，避免heredoc问题
+        echo "include \$(TOPDIR)/rules.mk" > "$THEME_DIR/Makefile"
+        echo "" >> "$THEME_DIR/Makefile"
+        echo "LUCI_TITLE:=栋仔主题" >> "$THEME_DIR/Makefile"
+        echo "LUCI_DEPENDS:=" >> "$THEME_DIR/Makefile"
+        echo "PKG_VERSION:=1.0" >> "$THEME_DIR/Makefile"
+        echo "PKG_RELEASE:=1" >> "$THEME_DIR/Makefile"
+        echo "" >> "$THEME_DIR/Makefile"
+        echo "include \$(INCLUDE_DIR)/package.mk" >> "$THEME_DIR/Makefile"
+        echo "" >> "$THEME_DIR/Makefile"
+        echo "define Package/luci-theme-dongzhai" >> "$THEME_DIR/Makefile"
+        echo "  \$(call Package/luci/webtemplate)" >> "$THEME_DIR/Makefile"
+        echo "  TITLE:=栋仔主题" >> "$THEME_DIR/Makefile"
+        echo "  DEPENDS:=+luci-compat" >> "$THEME_DIR/Makefile"
+        echo "endef" >> "$THEME_DIR/Makefile"
+        echo "" >> "$THEME_DIR/Makefile"
+        echo "define Package/luci-theme-dongzhai/description" >> "$THEME_DIR/Makefile"
+        echo "  栋仔个性化主题" >> "$THEME_DIR/Makefile"
+        echo "endef" >> "$THEME_DIR/Makefile"
+        echo "" >> "$THEME_DIR/Makefile"
+        echo "define Build/Configure" >> "$THEME_DIR/Makefile"
+        echo "endef" >> "$THEME_DIR/Makefile"
+        echo "" >> "$THEME_DIR/Makefile"
+        echo "define Build/Compile" >> "$THEME_DIR/Makefile"
+        echo "endef" >> "$THEME_DIR/Makefile"
+        echo "" >> "$THEME_DIR/Makefile"
+        echo "define Package/luci-theme-dongzhai/install" >> "$THEME_DIR/Makefile"
+        echo "	\$(INSTALL_DIR) \$(1)/www/luci-static/dongzhai" >> "$THEME_DIR/Makefile"
+        echo "	[ -d ./files ] && \$(CP) ./files/* \$(1)/www/luci-static/dongzhai/" >> "$THEME_DIR/Makefile"
+        echo "endef" >> "$THEME_DIR/Makefile"
+        echo "" >> "$THEME_DIR/Makefile"
+        echo "\$(eval \$(call BuildPackage,luci-theme-dongzhai))" >> "$THEME_DIR/Makefile"
+        
+        echo "✅ 主题Makefile创建完成"
+
+    - name: 创建主题CSS
+      run: |
+        CSS_DIR="$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css"
+        if [ ! -d "$CSS_DIR" ]; then
+          echo "❌ 错误：CSS目录不存在"
+          exit 1
+        fi
+        
+        # 使用echo创建CSS，避免heredoc问题
+        echo "/* 栋仔主题样式 */" > "$CSS_DIR/style.css"
+        echo ".header .fill .brand {" >> "$CSS_DIR/style.css"
+        echo "    color: #ff6600;" >> "$CSS_DIR/style.css"
+        echo "    font-weight: bold;" >> "$CSS_DIR/style.css"
+        echo "    font-size: 18px;" >> "$CSS_DIR/style.css"
+        echo "}" >> "$CSS_DIR/style.css"
+        echo ".sidebar {" >> "$CSS_DIR/style.css"
+        echo "    background: #2c3e50;" >> "$CSS_DIR/style.css"
+        echo "}" >> "$CSS_DIR/style.css"
+        echo ".sidebar .nav > li > a {" >> "$CSS_DIR/style.css"
+        echo "    color: #ecf0f1;" >> "$CSS_DIR/style.css"
+        echo "}" >> "$CSS_DIR/style.css"
+        echo ".btn-primary {" >> "$CSS_DIR/style.css"
+        echo "    background-color: #ff6600;" >> "$CSS_DIR/style.css"
+        echo "    border-color: #ff6600;" >> "$CSS_DIR/style.css"
+        echo "}" >> "$CSS_DIR/style.css"
+        
+        echo "✅ 主题CSS创建完成"
+
+    - name: 应用配置文件
+      timeout-minutes: 5
+      run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        
+        echo "=== 当前磁盘空间 ==="
+        df -h
+        
+        echo "复制配置文件到编译目录..."
+        if [ -f ".config" ]; then
+          cp .config "$BUILD_DIR/.config"
+          echo "✅ 配置文件复制完成"
+          
+          # 显示配置文件信息
+          echo "=== 配置文件目标信息 ==="
+          echo "目标路径: $BUILD_DIR/.config"
+          echo "文件大小: $(du -h $BUILD_DIR/.config | cut -f1)"
+        else
+          echo "❌ 错误：根目录下没有找到 .config 文件"
+          exit 1
+        fi
+        
+        cd "$BUILD_DIR"
+        
+        # 检查配置文件内容
+        echo "=== 配置文件关键配置检查 ==="
+        grep -E "(CONFIG_TARGET_|CONFIG_PACKAGE_luci)" .config | head -20 || echo "未找到相关配置"
+        
+        # 确保添加主题配置（如果配置文件中没有）
+        if ! grep -q "CONFIG_PACKAGE_luci-theme-dongzhai" .config; then
+          echo "添加主题配置到配置文件..."
+          echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> .config
+        fi
+        
+        echo "应用配置..."
+        if make defconfig; then
+          echo "✅ 配置应用完成"
+          echo "=== 最终配置预览（关键部分）==="
+          grep -E "(CONFIG_TARGET_|CONFIG_PACKAGE_luci)" .config | head -30
+        else
+          echo "❌ 配置应用失败，显示详细错误..."
+          make defconfig V=s
+          exit 1
+        fi
+
+    - name: 编译前深度清理
+      timeout-minutes: 5
+      run: |
+        echo "=== 编译前磁盘空间 ==="
+        df -h
+        echo "执行深度清理..."
+        
+        # 更彻底的清理
+        sudo apt-get autoremove -y
+        sudo apt-get clean
+        sudo rm -rf /var/cache/apt/archives/*
+        sudo rm -rf /var/lib/apt/lists/*
+        sudo rm -rf /tmp/*
+        sudo rm -rf /var/tmp/*
+        
+        # 清理日志文件
+        sudo find /var/log -type f -name "*.log" -exec truncate -s 0 {} \;
+        
+        # 移除.git目录释放更多空间
+        if [ -d "$BUILD_DIR/.git" ]; then
+          echo "移除.git目录节省空间..."
+          rm -rf "$BUILD_DIR/.git"
+        fi
+        
+        # 清理构建缓存
+        if [ -d "$BUILD_DIR/tmp" ]; then
+          rm -rf "$BUILD_DIR/tmp"
+        fi
+        
+        echo "=== 清理后磁盘空间 ==="
+        df -h
+
+    - name: 下载软件包
+      timeout-minutes: 20
+      run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        
+        THREADS=${{ github.event.inputs.compile_threads }}
+        echo "开始下载软件包（使用 $THREADS 线程）..."
+        echo "=== 下载前磁盘空间 ==="
+        df -h
+        
+        cd "$BUILD_DIR"
+        if make download -j$THREADS; then
+          echo "✅ 软件包下载完成"
+        else
+          echo "⚠️ 下载失败，尝试单线程重试..."
+          make download -j1 V=s
+        fi
+        
+        echo "=== 下载后磁盘空间 ==="
+        df -h
+
+    - name: 编译固件
+      timeout-minutes: 300
+      run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        
+        THREADS=${{ github.event.inputs.compile_threads }}
+        echo "开始编译固件..."
+        echo "=== 当前磁盘空间 ==="
+        df -h
+        
+        cd "$BUILD_DIR"
+        
+        # 检查磁盘空间，如果不足则清理
+        AVAILABLE_SPACE=$(df /dev/root --output=avail | tail -1)
+        if [ "$AVAILABLE_SPACE" -lt 1048576 ]; then  # 小于1GB
+          echo "⚠️ 磁盘空间不足，执行紧急清理..."
+          make dirclean
+          sudo rm -rf /tmp/*
+          df -h
+        fi
+        
+        echo "🔧 使用 $THREADS 线程编译..."
+        if make -j$THREADS; then
+          echo "🎉 编译成功！"
+        else
+          echo "⚠️ 编译失败，使用详细模式重试..."
+          make -j1 V=s
+        fi
+
+    - name: 检查生成的文件
+      run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        
+        echo "🔍 查找生成的固件文件..."
+        
+        # 详细查找所有可能的固件文件
+        echo "=== 所有 targets 目录结构 ==="
+        find "$BUILD_DIR/bin/targets" -type d 2>/dev/null | head -20
+        
+        echo "=== 所有 bin 文件 ==="
+        find "$BUILD_DIR/bin/targets" -name "*.bin" -type f 2>/dev/null | head -10
+        
+        echo "=== 所有 img 文件 ==="
+        find "$BUILD_DIR/bin/targets" -name "*.img" -type f 2>/dev/null | head -10
+        
+        echo "=== 所有固件相关文件 ==="
+        find "$BUILD_DIR/bin/targets" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" -o -name "*.trx" -o -name "*.combined" \) 2>/dev/null | head -20
+        
+        echo "=== 最终磁盘空间 ==="
+        df -h
+
+    - name: 快速上传.bin固件（失败时使用）
+      if: always()  # 无论编译成功与否都执行
+      run: |
+        echo "🚀 快速上传.bin固件..."
+        
+        # 查找所有.bin文件
+        BIN_FILES=$(find "$BUILD_DIR/bin/targets" -name "*.bin" -type f 2>/dev/null | head -10)
+        
+        if [ -n "$BIN_FILES" ]; then
+          echo "✅ 找到以下.bin文件:"
+          echo "$BIN_FILES"
+          
+          # 创建快速上传目录
+          mkdir -p "/tmp/quick_firmware"
+          
+          # 复制前5个.bin文件到临时目录
+          COUNT=0
+          for bin_file in $BIN_FILES; do
+            if [ $COUNT -lt 5 ]; then
+              filename=$(basename "$bin_file")
+              echo "复制: $filename"
+              cp "$bin_file" "/tmp/quick_firmware/"
+              COUNT=$((COUNT+1))
+            fi
+          done
+          
+          echo "✅ 已准备 $COUNT 个.bin文件用于快速上传"
+        else
+          echo "⚠️ 未找到.bin文件，尝试查找其他固件格式..."
+          # 查找其他格式的固件
+          OTHER_FILES=$(find "$BUILD_DIR/bin/targets" -type f \( -name "*.img" -o -name "*.trx" -o -name "*.combined" -o -name "*.gz" \) 2>/dev/null | head -5)
+          if [ -n "$OTHER_FILES" ]; then
+            echo "找到其他格式固件:"
+            echo "$OTHER_FILES"
+            mkdir -p "/tmp/quick_firmware"
+            COUNT=0
+            for file in $OTHER_FILES; do
+              if [ $COUNT -lt 5 ]; then
+                filename=$(basename "$file")
+                echo "复制: $filename"
+                cp "$file" "/tmp/quick_firmware/"
+                COUNT=$((COUNT+1))
+              fi
+            done
+          else
+            echo "❌ 未找到任何固件文件"
+            # 创建说明文件
+            mkdir -p "/tmp/quick_firmware"
+            echo "未找到固件文件，请检查.config配置" > "/tmp/quick_firmware/README.txt"
+          fi
+        fi
+
+    - name: 上传快速固件
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: quick-firmware-bin
+        path: /tmp/quick_firmware/
+        retention-days: 30
+        if-no-files-found: ignore
+
+    - name: 打包固件文件
+      if: success()
+      run: |
+        echo "📦 打包固件文件..."
+        
+        # 首先检查是否有固件文件生成
+        if [ ! -d "$BUILD_DIR/bin/targets" ]; then
+          echo "❌ 错误：targets目录不存在"
+          exit 1
+        fi
+        
+        # 查找所有固件文件
+        FIRMWARE_FILES=$(find "$BUILD_DIR/bin/targets" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null)
+        
+        if [ -z "$FIRMWARE_FILES" ]; then
+          echo "⚠️ 未找到固件文件，尝试查找其他文件类型..."
+          find "$BUILD_DIR/bin/targets" -type f | head -20
+          echo "❌ 无法找到固件文件，打包失败"
+          exit 1
+        fi
+        
+        echo "找到以下固件文件:"
+        echo "$FIRMWARE_FILES"
+        
+        # 创建固件包
+        cd "$BUILD_DIR"
+        if zip -r firmware.zip bin/targets/ -i "*.bin" "*.img" "*.gz" "*.trx" "*.combined" 2>/dev/null; then
+          echo "✅ 固件打包完成"
+          ls -lh firmware.zip
+        else
+          echo "⚠️ zip打包失败，尝试使用tar..."
+          if tar -czf firmware.tar.gz bin/targets/ --transform 's|bin/targets/||' 2>/dev/null; then
+            echo "✅ 固件tar打包完成"
+            ls -lh firmware.tar.gz
+            # 重命名为zip以保持后续步骤兼容
+            mv firmware.tar.gz firmware.zip
+          else
+            echo "❌ 所有打包方法都失败"
+            # 创建空的firmware.zip以避免后续步骤失败
+            touch firmware.zip
+          fi
+        fi
+
+    - name: 上传固件
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: openwrt-firmware
+        path: ${{ env.BUILD_DIR }}/firmware.zip
+        retention-days: 30
+        if-no-files-found: warn
+
+    - name: 上传原始文件（备用）
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: firmware-backup
+        path: ${{ env.BUILD_DIR }}/bin/targets/
+        retention-days: 7
+        if-no-files-found: warn
+
+    - name: 完成提示
+      if: always()
+      run: |
+        echo "=== 编译结果总结 ==="
+        
+        # 检查快速固件是否存在
+        if [ -d "/tmp/quick_firmware" ] && [ "$(ls -A /tmp/quick_firmware 2>/dev/null)" ]; then
+          echo "🎉 快速固件已上传！"
+          echo "📦 文件：quick-firmware-bin"
+          echo "📄 包含文件:"
+          ls -la "/tmp/quick_firmware/" 2>/dev/null || echo "快速固件目录为空"
+        fi
+        
+        # 检查完整固件包是否存在
+        if [ -f "$BUILD_DIR/firmware.zip" ] && [ -s "$BUILD_DIR/firmware.zip" ]; then
+          echo "✅ 完整固件包已上传"
+          echo "📦 文件：openwrt-firmware.zip"
+          echo "📊 文件大小: $(du -h $BUILD_DIR/firmware.zip | cut -f1)"
+        fi
+        
+        # 检查原始文件是否存在
+        if [ -d "$BUILD_DIR/bin/targets" ] && [ "$(ls -A $BUILD_DIR/bin/targets 2>/dev/null)" ]; then
+          echo "📁 原始文件已备份"
+          echo "📦 文件：firmware-backup"
+        fi
+        
+        echo ""
+        echo "📥 下载链接将在Artifacts区域显示"
+        echo "💡 提示：如果编译失败，请检查quick-firmware-bin中是否有部分编译成果"
+        echo "🕒 编译流程完成时间: $(date)"
+        echo "🔧 使用的配置文件: $(du -h .config 2>/dev/null | cut -f1 || echo '未知')"

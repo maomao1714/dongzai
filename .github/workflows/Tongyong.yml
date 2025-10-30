@@ -1,4 +1,4 @@
-name: OpenWrt编译完整依赖版
+name: 通用OpenWrt编译工作流（含依赖检查）
 
 on:
   workflow_dispatch:
@@ -27,19 +27,83 @@ jobs:
 
     - name: 磁盘空间优化
       run: |
+        echo "=== 初始磁盘空间 ==="
+        df -h
         sudo swapoff -a
         sudo dd if=/dev/zero of=/swapfile bs=1G count=2
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
+        echo "=== 磁盘和内存状态 ==="
         df -h
         free -h
 
-    - name: 安装完整编译环境（包含Python2.7）
+    - name: 清理系统缓存
       run: |
+        echo "清理系统缓存..."
+        sudo apt-get clean
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc 2>/dev/null || true
+        sudo rm -rf /usr/local/lib/node_modules 2>/dev/null || true
+        sudo rm -rf /var/lib/apt/lists/*
+        sudo rm -rf /tmp/*
+
+    - name: 验证配置文件
+      run: |
+        if [ ! -f ".config" ]; then
+          echo "❌ 错误：缺少配置文件 .config"
+          echo "请在工作流运行前上传 .config 文件到仓库根目录"
+          exit 1
+        fi
+        echo "✅ 找到配置文件"
+        echo "=== 配置文件预览（前30行）==="
+        head -30 .config
+
+    - name: 检查固件生成依赖
+      run: |
+        echo "🔍 检查固件生成必要依赖..."
+        
+        # 检查是否选择了目标架构
+        if ! grep -q "CONFIG_TARGET_[a-zA-Z]" .config 2>/dev/null; then
+          echo "❌ 错误：配置文件缺少目标架构设置"
+          echo "请在.config中添加目标架构，例如："
+          echo "CONFIG_TARGET_x86=y"
+          echo "CONFIG_TARGET_x86_64=y"
+          exit 1
+        fi
+        
+        # 检查是否选择了目标设备
+        if ! grep -q "CONFIG_TARGET_[a-zA-Z].*DEVICE_" .config 2>/dev/null; then
+          echo "⚠️ 警告：配置文件可能缺少具体设备设置"
+          echo "建议在.config中添加具体设备，例如："
+          echo "CONFIG_TARGET_x86_64_DEVICE_generic=y"
+        fi
+        
+        # 检查是否启用了内核
+        if ! grep -q "CONFIG_LINUX_[0-9]" .config 2>/dev/null; then
+          echo "⚠️ 警告：可能缺少内核配置"
+        fi
+        
+        # 检查是否选择了文件系统
+        if ! grep -q "CONFIG_TARGET_ROOTFS" .config 2>/dev/null; then
+          echo "⚠️ 警告：可能缺少根文件系统配置"
+          echo "建议在.config中添加："
+          echo "CONFIG_TARGET_ROOTFS_EXT4FS=y"
+          echo "或 CONFIG_TARGET_ROOTFS_SQUASHFS=y"
+        fi
+        
+        # 检查是否选择了基础包
+        if ! grep -q "CONFIG_PACKAGE_base-files" .config 2>/dev/null; then
+          echo "⚠️ 警告：缺少基础文件系统包"
+        fi
+        
+        echo "✅ 基本依赖检查完成"
+
+    - name: 安装完整编译环境
+      run: |
+        echo "安装完整编译环境..."
         sudo apt-get update
         
-        # 添加Python2.7支持
+        # 添加Python 2.7支持
         sudo apt-get install -y software-properties-common
         sudo add-apt-repository -y ppa:deadsnakes/ppa
         sudo apt-get update
@@ -81,7 +145,7 @@ jobs:
         
         # 创建python2符号链接
         sudo ln -sf /usr/bin/python2.7 /usr/bin/python2
-        echo "✅ 完整编译环境安装完成，包括Python2.7"
+        echo "✅ 完整编译环境安装完成"
 
     - name: 克隆源码
       run: |
@@ -91,6 +155,10 @@ jobs:
         fi
         echo "开始克隆源码..."
         git clone --depth=1 --single-branch "$REPO_URL" "$BUILD_DIR"
+        if [ $? -ne 0 ]; then
+          echo "❌ 源码克隆失败"
+          exit 1
+        fi
         echo "✅ 源码克隆完成"
 
     - name: 更新软件源
@@ -102,88 +170,18 @@ jobs:
         cd "$BUILD_DIR"
         echo "开始更新软件源..."
         ./scripts/feeds update -a
+        if [ $? -ne 0 ]; then
+          echo "❌ 软件源更新失败"
+          exit 1
+        fi
         ./scripts/feeds install -a
+        if [ $? -ne 0 ]; then
+          echo "❌ 软件源安装失败"
+          exit 1
+        fi
         echo "✅ 软件源更新完成"
 
-    - name: 创建主题目录结构
-      run: |
-        echo "创建主题目录结构..."
-        mkdir -p "$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css"
-        mkdir -p "$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/js"
-        echo "✅ 主题目录创建完成"
-
-    - name: 创建主题Makefile
-      run: |
-        THEME_DIR="$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai"
-        if [ ! -d "$THEME_DIR" ]; then
-          echo "❌ 错误：主题目录不存在"
-          exit 1
-        fi
-        
-        cat > "$THEME_DIR/Makefile" << 'EOFMAKEFILE'
-include $(TOPDIR)/rules.mk
-
-LUCI_TITLE:=栋仔主题
-LUCI_DEPENDS:=
-PKG_VERSION:=1.0
-PKG_RELEASE:=1
-
-include $(INCLUDE_DIR)/package.mk
-
-define Package/luci-theme-dongzhai
-  $(call Package/luci/webtemplate)
-  TITLE:=栋仔主题
-  DEPENDS:=+luci-compat
-endef
-
-define Package/luci-theme-dongzhai/description
-  栋仔个性化主题
-endef
-
-define Build/Configure
-endef
-
-define Build/Compile
-endef
-
-define Package/luci-theme-dongzhai/install
-	$(INSTALL_DIR) $(1)/www/luci-static/dongzhai
-	[ -d ./files ] && $(CP) ./files/* $(1)/www/luci-static/dongzhai/
-endef
-
-$(eval $(call BuildPackage,luci-theme-dongzhai))
-EOFMAKEFILE
-        echo "✅ 主题Makefile创建完成"
-
-    - name: 创建主题CSS文件
-      run: |
-        CSS_DIR="$BUILD_DIR/package/lean/dongzhai-theme/luci-theme-dongzhai/files/www/luci-static/dongzhai/css"
-        if [ ! -d "$CSS_DIR" ]; then
-          echo "❌ 错误：CSS目录不存在"
-          exit 1
-        fi
-        
-        cat > "$CSS_DIR/style.css" << 'EOFCSS'
-/* 栋仔主题样式 */
-.header .fill .brand {
-    color: #ff6600;
-    font-weight: bold;
-    font-size: 18px;
-}
-.sidebar {
-    background: #2c3e50;
-}
-.sidebar .nav > li > a {
-    color: #ecf0f1;
-}
-.btn-primary {
-    background-color: #ff6600;
-    border-color: #ff6600;
-}
-EOFCSS
-        echo "✅ 主题CSS创建完成"
-
-    - name: 应用配置和准备编译
+    - name: 应用配置
       run: |
         if [ ! -d "$BUILD_DIR" ]; then
           echo "❌ 错误：$BUILD_DIR 目录不存在"
@@ -197,26 +195,9 @@ EOFCSS
           cp "../.config" ".config"
           echo "✅ 配置文件复制完成"
         else
-          echo "⚠️ 未找到外部配置文件，使用默认配置"
+          echo "❌ 错误：未找到.config文件"
+          exit 1
         fi
-        
-        echo "添加主题配置..."
-        echo "CONFIG_PACKAGE_luci-theme-dongzhai=y" >> ".config"
-        echo "CONFIG_DEFAULT_luci-theme-dongzhai=y" >> ".config"
-        
-        echo "添加编译优化配置..."
-        {
-          echo "# 空间优化"
-          echo "CONFIG_KERNEL_KALLSYMS=n"
-          echo "CONFIG_KERNEL_DEBUG_KERNEL=n"
-          echo "CONFIG_KERNEL_DEBUG_INFO=n"
-          echo "CONFIG_USE_STRIP=y"
-          echo "CONFIG_USE_SSTRIP=n"
-          echo "CONFIG_BUILD_NLS=n"
-          echo "CONFIG_CLEAN_IPKG=y"
-          echo "CONFIG_CCACHE=n"
-          echo "# CONFIG_SDK is not set"
-        } >> ".config"
         
         echo "应用默认配置..."
         make defconfig
@@ -226,40 +207,120 @@ EOFCSS
         fi
         echo "✅ 配置应用完成"
 
+    - name: 自动修复常见配置问题
+      run: |
+        cd "$BUILD_DIR"
+        echo "🔧 自动修复常见配置问题..."
+        
+        # 检查并确保至少有一个文件系统被选中
+        if ! grep -q "CONFIG_TARGET_ROOTFS_EXT4FS=y" .config && \
+           ! grep -q "CONFIG_TARGET_ROOTFS_SQUASHFS=y" .config; then
+          echo "⚠️ 自动添加EXT4文件系统支持"
+          echo "CONFIG_TARGET_ROOTFS_EXT4FS=y" >> .config
+        fi
+        
+        # 确保基础包被选中
+        if ! grep -q "CONFIG_PACKAGE_base-files=y" .config; then
+          echo "⚠️ 自动添加基础文件系统包"
+          echo "CONFIG_PACKAGE_base-files=y" >> .config
+        fi
+        
+        # 确保内核镜像被选中
+        if ! grep -q "CONFIG_PACKAGE_kmod=y" .config; then
+          echo "⚠️ 自动添加内核模块支持"
+          echo "CONFIG_PACKAGE_kmod=y" >> .config
+        fi
+        
+        # 重新应用配置
+        make defconfig
+        echo "✅ 配置修复完成"
+
     - name: 编译前清理
       run: |
         echo "=== 编译前磁盘空间 ==="
         df -h
+        echo "执行最终清理..."
         sudo apt-get clean
-        sudo rm -rf /var/lib/apt/lists/*
-        sudo rm -rf /tmp/*
-        echo "✅ 清理完成"
+        sudo rm -rf /var/cache/apt/archives/*
+        
+        # 移除.git目录节省空间
+        if [ -d "$BUILD_DIR/.git" ]; then
+          echo "移除.git目录节省空间..."
+          rm -rf "$BUILD_DIR/.git"
+        fi
+        
+        echo "=== 清理后磁盘空间 ==="
+        df -h
 
     - name: 下载软件包
       run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        
         cd "$BUILD_DIR"
         THREADS=${{ github.event.inputs.compile_threads }}
+        
         echo "开始下载软件包（使用 $THREADS 线程）..."
-        make download -j$THREADS
-        echo "✅ 软件包下载完成"
+        for i in {1..3}; do
+          echo "第 $i 次尝试下载..."
+          if make download -j$THREADS; then
+            echo "✅ 软件包下载完成"
+            break
+          else
+            echo "⚠️ 第 $i 次下载失败，重试..."
+            sleep 5
+          fi
+        done
+        
+        if [ $? -ne 0 ]; then
+          echo "❌ 软件包下载失败"
+          exit 1
+        fi
 
     - name: 编译固件
       run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        
         cd "$BUILD_DIR"
         THREADS=${{ github.event.inputs.compile_threads }}
-        echo "开始编译固件（使用 $THREADS 线程）..."
+        
+        echo "开始编译固件..."
+        echo "=== 当前磁盘空间 ==="
+        df -h
+        echo "=== 内存使用情况 ==="
+        free -h
+        
+        echo "🔧 使用 $THREADS 线程编译..."
         
         # 分步编译提高稳定性
         echo "步骤1: 编译工具链..."
-        make tools/compile -j$THREADS || make tools/compile -j1 V=s
+        if make tools/compile -j$THREADS; then
+          echo "✅ 工具链编译完成"
+        else
+          echo "⚠️ 工具链编译失败，使用单线程重试..."
+          make tools/compile -j1 V=s
+        fi
         
         echo "步骤2: 编译工具..."
-        make toolchain/compile -j$THREADS || make toolchain/compile -j1 V=s
+        if make toolchain/compile -j$THREADS; then
+          echo "✅ 工具编译完成"
+        else
+          echo "⚠️ 工具编译失败，使用单线程重试..."
+          make toolchain/compile -j1 V=s
+        fi
         
         echo "步骤3: 最终编译..."
-        make -j$THREADS || make -j1 V=s
-        
-        echo "✅ 编译流程完成"
+        if make -j$THREADS; then
+          echo "🎉 编译成功！"
+        else
+          echo "❌ 编译失败，使用详细模式重试..."
+          make -j1 V=s
+        fi
 
     - name: 检查生成的文件
       run: |
@@ -269,15 +330,63 @@ EOFCSS
         fi
         
         echo "🔍 查找生成的固件文件:"
-        find "$BUILD_DIR/bin/targets/" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null | head -10
+        FIRMWARE_FILES=$(find "$BUILD_DIR/bin/targets/" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null)
         
-        if [ $? -eq 0 ]; then
-          echo "✅ 固件文件生成成功"
+        if [ -n "$FIRMWARE_FILES" ]; then
+          echo "✅ 找到以下固件文件:"
+          echo "$FIRMWARE_FILES"
+          echo "=== 文件大小统计 ==="
+          du -sh "$BUILD_DIR/bin/targets/" 2>/dev/null || true
         else
-          echo "❌ 未找到固件文件"
+          echo "❌ 未找到任何固件文件"
+          echo " "
+          echo "🔧 故障排除建议:"
+          echo "1. 检查.config文件是否包含正确的目标设备配置"
+          echo "2. 确保选择了文件系统 (EXT4或SQUASHFS)"
+          echo "3. 检查是否选择了内核配置"
+          echo "4. 查看编译日志是否有隐藏错误"
+          echo "5. 尝试在本地环境测试相同配置"
+          echo " "
+          echo "📋 常见缺失配置示例:"
+          echo "CONFIG_TARGET_x86=y                    # 目标架构"
+          echo "CONFIG_TARGET_x86_64=y                # 目标子架构"  
+          echo "CONFIG_TARGET_x86_64_DEVICE_generic=y # 具体设备"
+          echo "CONFIG_TARGET_ROOTFS_EXT4FS=y         # 文件系统"
+          echo "CONFIG_PACKAGE_base-files=y           # 基础包"
+          exit 1
+        fi
+        
+        echo "=== 最终磁盘空间 ==="
+        df -h
+
+    - name: 分析固件生成情况
+      if: success()
+      run: |
+        echo "📊 固件生成情况分析:"
+        cd "$BUILD_DIR"
+        
+        # 统计各类固件数量
+        BIN_COUNT=$(find bin/targets -name "*.bin" -type f | wc -l)
+        IMG_COUNT=$(find bin/targets -name "*.img" -type f | wc -l)
+        GZ_COUNT=$(find bin/targets -name "*.gz" -type f | wc -l)
+        
+        echo "📦 固件统计:"
+        echo "   - .bin 文件: $BIN_COUNT 个"
+        echo "   - .img 文件: $IMG_COUNT 个" 
+        echo "   - .gz 文件: $GZ_COUNT 个"
+        echo "   - 总计: $((BIN_COUNT + IMG_COUNT + GZ_COUNT)) 个文件"
+        
+        # 检查文件大小
+        echo "📏 文件大小检查:"
+        find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.gz" | xargs ls -lh 2>/dev/null | head -10
+        
+        # 检查是否有过小的文件（可能不完整）
+        SMALL_FILES=$(find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.gz" -size -1M 2>/dev/null | wc -l)
+        if [ "$SMALL_FILES" -gt 0 ]; then
+          echo "⚠️ 发现 $SMALL_FILES 个可能不完整的小文件 (<1MB)"
         fi
 
-    - name: 上传固件
+    - name: 上传固件文件
       if: success()
       uses: actions/upload-artifact@v4
       with:
@@ -285,13 +394,29 @@ EOFCSS
         path: ${{ env.BUILD_DIR }}/bin/targets/
         retention-days: 30
 
+    - name: 快速上传.bin文件
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: quick-firmware
+        path: ${{ env.BUILD_DIR }}/bin/targets/**/*.bin
+        retention-days: 7
+
     - name: 完成提示
       if: always()
       run: |
         if [ "${{ job.status }}" == "success" ]; then
           echo "🎊 编译成功完成！"
-          echo "📥 固件文件可在Artifacts区域下载"
+          echo "📥 固件文件可在Artifacts区域下载："
+          echo "   - openwrt-firmware: 完整固件目录"
+          echo "   - quick-firmware: 快速下载.bin文件"
+          echo " "
+          echo "💡 提示：下次编译可尝试使用2线程加快速度"
         else
           echo "❌ 编译过程出现错误"
-          echo "💡 请检查日志获取详细错误信息"
+          echo "💡 请检查："
+          echo "   1. .config文件是否正确"
+          echo "   2. 是否选择了正确的目标设备"
+          echo "   3. 编译日志中的具体错误信息"
+          echo "   4. 磁盘空间是否充足"
         fi

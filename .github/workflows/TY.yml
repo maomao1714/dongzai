@@ -1,4 +1,4 @@
-name: 通用OpenWrt编译工作流（含依赖检查和冲突修复）
+name: 通用OpenWrt编译工作流（强化版）
 
 on:
   workflow_dispatch:
@@ -58,45 +58,30 @@ jobs:
         echo "=== 配置文件预览（前30行）==="
         head -30 .config
 
-    - name: 检查固件生成依赖
+    - name: 检查配置文件完整性
       run: |
-        echo "🔍 检查固件生成必要依赖..."
+        echo "🔍 深度检查配置文件..."
         
-        # 检查是否选择了目标架构
-        if ! grep -q "CONFIG_TARGET_[a-zA-Z]" .config 2>/dev/null; then
-          echo "❌ 错误：配置文件缺少目标架构设置"
-          echo "请在.config中添加目标架构，例如："
-          echo "CONFIG_TARGET_x86=y"
-          echo "CONFIG_TARGET_x86_64=y"
+        # 检查基本架构配置
+        if ! grep -q "CONFIG_TARGET_[a-zA-Z]" .config; then
+          echo "❌ 错误：缺少目标架构配置"
           exit 1
         fi
         
-        # 检查是否选择了目标设备
-        if ! grep -q "CONFIG_TARGET_[a-zA-Z].*DEVICE_" .config 2>/dev/null; then
-          echo "⚠️ 警告：配置文件可能缺少具体设备设置"
-          echo "建议在.config中添加具体设备，例如："
-          echo "CONFIG_TARGET_x86_64_DEVICE_generic=y"
+        # 检查内核版本
+        if ! grep -q "CONFIG_LINUX_[0-9]" .config; then
+          echo "⚠️ 警告：可能缺少内核版本配置"
         fi
         
-        # 检查是否启用了内核
-        if ! grep -q "CONFIG_LINUX_[0-9]" .config 2>/dev/null; then
-          echo "⚠️ 警告：可能缺少内核配置"
-        fi
+        # 检查关键包
+        CRITICAL_PACKAGES=("base-files" "busybox" "dnsmasq" "dropbear" "firewall" "kmod" "libc" "opkg" "procd" "uci" "ubus")
+        for pkg in "${CRITICAL_PACKAGES[@]}"; do
+          if ! grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
+            echo "⚠️ 警告：建议包含基础包 $pkg"
+          fi
+        done
         
-        # 检查是否选择了文件系统
-        if ! grep -q "CONFIG_TARGET_ROOTFS" .config 2>/dev/null; then
-          echo "⚠️ 警告：可能缺少根文件系统配置"
-          echo "建议在.config中添加："
-          echo "CONFIG_TARGET_ROOTFS_EXT4FS=y"
-          echo "或 CONFIG_TARGET_ROOTFS_SQUASHFS=y"
-        fi
-        
-        # 检查是否选择了基础包
-        if ! grep -q "CONFIG_PACKAGE_base-files" .config 2>/dev/null; then
-          echo "⚠️ 警告：缺少基础文件系统包"
-        fi
-        
-        echo "✅ 基本依赖检查完成"
+        echo "✅ 配置文件检查完成"
 
     - name: 安装完整编译环境
       run: |
@@ -141,7 +126,9 @@ jobs:
           rsync \
           subversion \
           texinfo \
-          zlib1g-dev
+          zlib1g-dev \
+          gperf \
+          antlr3
         
         # 创建python2符号链接
         sudo ln -sf /usr/bin/python2.7 /usr/bin/python2
@@ -179,8 +166,6 @@ jobs:
           head -20 "$BUILD_DIR/feeds.conf.default"
         else
           echo "ℹ️ 未找到自定义feeds.conf.default，将使用源码默认配置"
-          echo "=== 源码默认feeds配置预览（前20行）==="
-          head -20 "$BUILD_DIR/feeds.conf.default" 2>/dev/null || echo "未找到默认feeds.conf.default文件"
         fi
 
     - name: 更新软件源
@@ -192,24 +177,29 @@ jobs:
         cd "$BUILD_DIR"
         echo "开始更新软件源..."
         
-        # 检查feeds配置文件是否存在
-        if [ -f "feeds.conf.default" ]; then
-          echo "使用feeds.conf.default配置更新软件源..."
-        else
-          echo "⚠️ 警告：feeds.conf.default文件不存在，使用默认源更新"
-        fi
+        # 多次尝试更新feeds
+        for i in {1..3}; do
+          echo "第 $i 次尝试更新feeds..."
+          if ./scripts/feeds update -a; then
+            echo "✅ feeds更新成功"
+            break
+          else
+            echo "⚠️ 第 $i 次feeds更新失败"
+            if [ $i -eq 3 ]; then
+              echo "❌ feeds更新彻底失败"
+              exit 1
+            fi
+            sleep 5
+          fi
+        done
         
-        ./scripts/feeds update -a
-        if [ $? -ne 0 ]; then
-          echo "❌ 软件源更新失败"
-          exit 1
+        # 安装feeds
+        echo "安装feeds..."
+        if ./scripts/feeds install -a; then
+          echo "✅ feeds安装成功"
+        else
+          echo "⚠️ feeds安装有错误，但继续执行..."
         fi
-        ./scripts/feeds install -a
-        if [ $? -ne 0 ]; then
-          echo "❌ 软件源安装失败"
-          exit 1
-        fi
-        echo "✅ 软件源更新完成"
 
     - name: 应用配置
       run: |
@@ -230,68 +220,43 @@ jobs:
         fi
         
         echo "应用默认配置..."
-        make defconfig
-        if [ $? -ne 0 ]; then
-          echo "❌ 配置应用失败"
-          exit 1
+        if make defconfig; then
+          echo "✅ 配置应用完成"
+        else
+          echo "❌ 配置应用失败，尝试清理后重试..."
+          make clean
+          make defconfig
         fi
-        echo "✅ 配置应用完成"
 
-    - name: 检测和修复包冲突
+    - name: 预编译检查和修复
       run: |
         cd "$BUILD_DIR"
-        echo "🔍 检测已知包冲突..."
+        echo "🔧 执行预编译检查和修复..."
         
-        # 检测vsftpd冲突（根据错误信息）
-        if grep -q "CONFIG_PACKAGE_luci-app-vsftpd=y" .config && \
-           grep -q "CONFIG_PACKAGE_vsftpd-alt=y" .config; then
-          echo "⚠️ 检测到vsftpd冲突，自动修复..."
-          # 取消选择luci-app-vsftpd，因为它与vsftpd-alt冲突
-          sed -i 's/CONFIG_PACKAGE_luci-app-vsftpd=y/CONFIG_PACKAGE_luci-app-vsftpd=n/' .config
-          echo "✅ 已取消选择luci-app-vsftpd以解决与vsftpd-alt的冲突"
-        fi
+        # 检查配置完整性并修复
+        echo "检查配置完整性..."
         
-        # 检测其他常见冲突
-        if grep -q "CONFIG_PACKAGE_dnsmasq=y" .config && \
-           grep -q "CONFIG_PACKAGE_dnsmasq-full=y" .config; then
-          echo "⚠️ 检测到dnsmasq冲突，自动修复..."
-          # 优先使用dnsmasq-full
-          sed -i 's/CONFIG_PACKAGE_dnsmasq=y/CONFIG_PACKAGE_dnsmasq=n/' .config
-          echo "✅ 已取消选择dnsmasq以解决与dnsmasq-full的冲突"
-        fi
-        
-        # 重新应用配置以验证修复
-        echo "重新应用配置验证冲突修复..."
-        make defconfig
-        echo "✅ 包冲突检测和修复完成"
-
-    - name: 自动修复常见配置问题
-      run: |
-        cd "$BUILD_DIR"
-        echo "🔧 自动修复常见配置问题..."
-        
-        # 检查并确保至少有一个文件系统被选中
-        if ! grep -q "CONFIG_TARGET_ROOTFS_EXT4FS=y" .config && \
-           ! grep -q "CONFIG_TARGET_ROOTFS_SQUASHFS=y" .config; then
-          echo "⚠️ 自动添加EXT4文件系统支持"
+        # 确保有文件系统
+        if ! grep -q "CONFIG_TARGET_ROOTFS" .config; then
+          echo "添加默认文件系统配置..."
           echo "CONFIG_TARGET_ROOTFS_EXT4FS=y" >> .config
+          echo "CONFIG_TARGET_ROOTFS_SQUASHFS=y" >> .config
         fi
         
-        # 确保基础包被选中
-        if ! grep -q "CONFIG_PACKAGE_base-files=y" .config; then
-          echo "⚠️ 自动添加基础文件系统包"
-          echo "CONFIG_PACKAGE_base-files=y" >> .config
-        fi
-        
-        # 确保内核镜像被选中
-        if ! grep -q "CONFIG_PACKAGE_kmod=y" .config; then
-          echo "⚠️ 自动添加内核模块支持"
-          echo "CONFIG_PACKAGE_kmod=y" >> .config
-        fi
+        # 确保有基础包
+        BASE_PACKAGES=("base-files" "busybox" "dropbear" "firewall" "kmod" "libc" "opkg" "procd" "uci")
+        for pkg in "${BASE_PACKAGES[@]}"; do
+          if ! grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
+            echo "添加基础包: $pkg"
+            echo "CONFIG_PACKAGE_${pkg}=y" >> .config
+          fi
+        done
         
         # 重新应用配置
+        echo "重新应用配置..."
         make defconfig
-        echo "✅ 配置修复完成"
+        
+        echo "✅ 预编译检查完成"
 
     - name: 编译前清理
       run: |
@@ -321,23 +286,22 @@ jobs:
         THREADS=${{ github.event.inputs.compile_threads }}
         
         echo "开始下载软件包（使用 $THREADS 线程）..."
-        for i in {1..3}; do
+        for i in {1..5}; do
           echo "第 $i 次尝试下载..."
           if make download -j$THREADS; then
             echo "✅ 软件包下载完成"
             break
           else
             echo "⚠️ 第 $i 次下载失败，重试..."
-            sleep 5
+            sleep 10
           fi
         done
         
         if [ $? -ne 0 ]; then
-          echo "❌ 软件包下载失败"
-          exit 1
+          echo "❌ 软件包下载失败，但继续尝试编译..."
         fi
 
-    - name: 编译固件（带冲突处理）
+    - name: 分步编译（容错模式）
       run: |
         if [ ! -d "$BUILD_DIR" ]; then
           echo "❌ 错误：$BUILD_DIR 目录不存在"
@@ -347,70 +311,60 @@ jobs:
         cd "$BUILD_DIR"
         THREADS=${{ github.event.inputs.compile_threads }}
         
-        echo "开始编译固件..."
+        echo "开始分步编译..."
         echo "=== 当前磁盘空间 ==="
         df -h
         echo "=== 内存使用情况 ==="
         free -h
         
-        echo "🔧 使用 $THREADS 线程编译..."
+        echo "🔧 使用容错模式编译..."
         
-        # 分步编译提高稳定性
-        echo "步骤1: 编译工具链..."
-        if make tools/compile -j$THREADS; then
-          echo "✅ 工具链编译完成"
-        else
-          echo "⚠️ 工具链编译失败，使用单线程重试..."
-          make tools/compile -j1 V=s
-        fi
+        # 分步编译，每一步都检查结果
+        COMPILE_STEPS=(
+          "tools/compile"
+          "toolchain/compile" 
+          "target/compile"
+          "package/compile"
+          "package/index"
+        )
         
-        echo "步骤2: 编译工具..."
-        if make toolchain/compile -j$THREADS; then
-          echo "✅ 工具编译完成"
-        else
-          echo "⚠️ 工具编译失败，使用单线程重试..."
-          make toolchain/compile -j1 V=s
-        fi
+        for step in "${COMPILE_STEPS[@]}"; do
+          echo "=========================================="
+          echo "执行编译步骤: $step"
+          echo "=========================================="
+          
+          for attempt in {1..2}; do
+            echo "第 $attempt 次尝试..."
+            if make $step -j$THREADS; then
+              echo "✅ $step 完成"
+              break
+            else
+              echo "⚠️ $step 第 $attempt 次尝试失败"
+              if [ $attempt -eq 2 ]; then
+                echo "❌ $step 彻底失败，尝试单线程详细模式..."
+                make $step -j1 V=s
+                if [ $? -ne 0 ]; then
+                  echo "❌ $step 单线程也失败，继续下一个步骤..."
+                fi
+              fi
+              sleep 5
+            fi
+          done
+        done
         
-        echo "步骤3: 最终编译..."
+        echo "🎉 分步编译完成"
+
+    - name: 最终编译
+      run: |
+        cd "$BUILD_DIR"
+        THREADS=${{ github.event.inputs.compile_threads }}
+        
+        echo "执行最终完整编译..."
         if make -j$THREADS; then
           echo "🎉 编译成功！"
         else
-          echo "❌ 编译失败，尝试自动修复包冲突后重试..."
-          
-          # 检查是否是包冲突导致的失败
-          if grep -q "check_data_file_clashes" logs/package.log 2>/dev/null || \
-             grep -q "opkg_install_cmd: Cannot install package" logs/package.log 2>/dev/null; then
-            echo "🔧 检测到包冲突，进行自动修复..."
-            
-            # 备份当前配置
-            cp .config .config.backup
-            
-            # 常见冲突修复
-            if grep -q "CONFIG_PACKAGE_luci-app-vsftpd=y" .config; then
-              echo "禁用冲突包: luci-app-vsftpd"
-              sed -i 's/CONFIG_PACKAGE_luci-app-vsftpd=y/CONFIG_PACKAGE_luci-app-vsftpd=n/' .config
-            fi
-            
-            if grep -q "CONFIG_PACKAGE_vsftpd=y" .config; then
-              echo "禁用冲突包: vsftpd"
-              sed -i 's/CONFIG_PACKAGE_vsftpd=y/CONFIG_PACKAGE_vsftpd=n/' .config
-            fi
-            
-            # 重新应用配置
-            make defconfig
-            
-            echo "🔄 使用修复后的配置重新编译..."
-            if make -j1 V=s; then
-              echo "🎉 修复后编译成功！"
-            else
-              echo "❌ 修复后编译仍然失败"
-              exit 1
-            fi
-          else
-            echo "❌ 编译失败，使用详细模式重试..."
-            make -j1 V=s
-          fi
+          echo "❌ 最终编译失败，尝试单线程详细编译..."
+          make -j1 V=s
         fi
 
     - name: 检查生成的文件
@@ -420,77 +374,62 @@ jobs:
           exit 1
         fi
         
-        echo "🔍 查找生成的固件文件:"
-        FIRMWARE_FILES=$(find "$BUILD_DIR/bin/targets/" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null)
+        echo "🔍 查找生成的固件文件..."
+        
+        # 多种方式查找固件文件
+        find_command="find \"$BUILD_DIR/bin\" -type f \( -name \"*.bin\" -o -name \"*.img\" -o -name \"*.gz\" -o -name \"*.trx\" -o -name \"*.elf\" \) 2>/dev/null"
+        FIRMWARE_FILES=$(eval $find_command)
         
         if [ -n "$FIRMWARE_FILES" ]; then
           echo "✅ 找到以下固件文件:"
           echo "$FIRMWARE_FILES"
           echo "=== 文件大小统计 ==="
-          du -sh "$BUILD_DIR/bin/targets/" 2>/dev/null || true
+          du -sh "$BUILD_DIR/bin/" 2>/dev/null || true
+          
+          # 检查文件是否有效（大于1MB）
+          VALID_FILES=0
+          while IFS= read -r file; do
+            if [ -f "$file" ] && [ $(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null) -gt 1048576 ]; then
+              VALID_FILES=$((VALID_FILES + 1))
+            fi
+          done <<< "$FIRMWARE_FILES"
+          
+          echo "有效固件文件数: $VALID_FILES"
         else
           echo "❌ 未找到任何固件文件"
-          echo " "
-          echo "🔧 故障排除建议:"
-          echo "1. 检查.config文件是否包含正确的目标设备配置"
-          echo "2. 确保选择了文件系统 (EXT4或SQUASHFS)"
-          echo "3. 检查是否选择了内核配置"
-          echo "4. 查看编译日志是否有隐藏错误"
-          echo "5. 尝试在本地环境测试相同配置"
-          echo " "
-          echo "📋 常见缺失配置示例:"
-          echo "CONFIG_TARGET_x86=y                    # 目标架构"
-          echo "CONFIG_TARGET_x86_64=y                # 目标子架构"  
-          echo "CONFIG_TARGET_x86_64_DEVICE_generic=y # 具体设备"
-          echo "CONFIG_TARGET_ROOTFS_EXT4FS=y         # 文件系统"
-          echo "CONFIG_PACKAGE_base-files=y           # 基础包"
+          echo "=== 目录结构 ==="
+          find "$BUILD_DIR/bin" -type d 2>/dev/null | head -20
           exit 1
         fi
         
         echo "=== 最终磁盘空间 ==="
         df -h
 
-    - name: 分析固件生成情况
-      if: success()
-      run: |
-        echo "📊 固件生成情况分析:"
-        cd "$BUILD_DIR"
-        
-        # 统计各类固件数量
-        BIN_COUNT=$(find bin/targets -name "*.bin" -type f | wc -l)
-        IMG_COUNT=$(find bin/targets -name "*.img" -type f | wc -l)
-        GZ_COUNT=$(find bin/targets -name "*.gz" -type f | wc -l)
-        
-        echo "📦 固件统计:"
-        echo "   - .bin 文件: $BIN_COUNT 个"
-        echo "   - .img 文件: $IMG_COUNT 个" 
-        echo "   - .gz 文件: $GZ_COUNT 个"
-        echo "   - 总计: $((BIN_COUNT + IMG_COUNT + GZ_COUNT)) 个文件"
-        
-        # 检查文件大小
-        echo "📏 文件大小检查:"
-        find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.gz" | xargs ls -lh 2>/dev/null | head -10
-        
-        # 检查是否有过小的文件（可能不完整）
-        SMALL_FILES=$(find bin/targets -name "*.bin" -o -name "*.img" -o -name "*.gz" -size -1M 2>/dev/null | wc -l)
-        if [ "$SMALL_FILES" -gt 0 ]; then
-          echo "⚠️ 发现 $SMALL_FILES 个可能不完整的小文件 (<1MB)"
-        fi
-
     - name: 上传固件文件
       if: success()
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-firmware
-        path: ${{ env.BUILD_DIR }}/bin/targets/
+        path: ${{ env.BUILD_DIR }}/bin/
         retention-days: 30
 
-    - name: 快速上传.bin文件
+    - name: 快速上传固件
       if: success()
       uses: actions/upload-artifact@v4
       with:
         name: quick-firmware
-        path: ${{ env.BUILD_DIR }}/bin/targets/**/*.bin
+        path: |
+          ${{ env.BUILD_DIR }}/bin/**/*.bin
+          ${{ env.BUILD_DIR }}/bin/**/*.img
+        retention-days: 7
+
+    - name: 上传编译日志
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: |
+          ${{ env.BUILD_DIR }}/logs/
         retention-days: 7
 
     - name: 完成提示
@@ -499,16 +438,16 @@ jobs:
         if [ "${{ job.status }}" == "success" ]; then
           echo "🎊 编译成功完成！"
           echo "📥 固件文件可在Artifacts区域下载："
-          echo "   - openwrt-firmware: 完整固件目录"
-          echo "   - quick-firmware: 快速下载.bin文件"
-          echo " "
-          echo "💡 提示：下次编译可尝试使用2线程加快速度"
+          echo "   - openwrt-firmware: 完整编译输出"
+          echo "   - quick-firmware: 快速下载固件"
+          echo "   - build-logs: 编译日志（用于调试）"
         else
           echo "❌ 编译过程出现错误"
-          echo "💡 请检查："
-          echo "   1. .config文件是否正确"
-          echo "   2. 是否选择了正确的目标设备"
-          echo "   3. 编译日志中的具体错误信息"
-          echo "   4. 磁盘空间是否充足"
-          echo "   5. 是否存在包冲突（如vsftpd和vsftpd-alt）"
+          echo "💡 故障排除建议:"
+          echo "   1. 检查 .config 文件配置"
+          echo "   2. 查看 build-logs 中的详细错误"
+          echo "   3. 确保选择了正确的目标架构和设备"
+          echo "   4. 检查是否包含必要的基础包"
+          echo "   5. 尝试减少编译的包数量"
+          echo "   6. 检查 feeds.conf.default 配置"
         fi

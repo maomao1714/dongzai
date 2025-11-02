@@ -1,4 +1,4 @@
-name: 通用OpenWrt编译（强化版）2
+name: 通用OpenWrt（强化版）888
 
 on:
   workflow_dispatch:
@@ -248,6 +248,51 @@ jobs:
           make defconfig
         fi
 
+    - name: 修复Qt OpenSSL编译错误
+      run: |
+        if [ ! -d "$BUILD_DIR" ]; then
+          echo "❌ 错误：$BUILD_DIR 目录不存在"
+          exit 1
+        fi
+        
+        cd "$BUILD_DIR"
+        
+        echo "🔧 修复Qt OpenSSL编译错误..."
+        
+        # 检查是否有qtbase相关的包
+        if grep -q "CONFIG_PACKAGE_qt5" .config || grep -q "CONFIG_PACKAGE_qtbase" .config; then
+          echo "检测到Qt相关包，应用OpenSSL修复..."
+          
+          # 方法1：禁用qtbase的openssl-linked特性
+          echo "方法1：修改qtbase配置禁用openssl-linked..."
+          if [ -f "package/feeds/packages/qtbase/Makefile" ]; then
+            echo "找到qtbase Makefile，尝试修改配置..."
+            # 备份原文件
+            cp "package/feeds/packages/qtbase/Makefile" "package/feeds/packages/qtbase/Makefile.backup"
+            # 修改配置，禁用openssl-linked
+            sed -i 's/--openssl-linked//g' "package/feeds/packages/qtbase/Makefile"
+            sed -i 's/openssl-linked//g' "package/feeds/packages/qtbase/Makefile"
+            echo "✅ qtbase配置修改完成"
+          fi
+          
+          # 方法2：在配置中明确禁用SSL
+          echo "方法2：在.config中明确禁用Qt SSL支持..."
+          if grep -q "CONFIG_PACKAGE_qtbase" .config; then
+            echo "# 禁用Qt SSL支持以避免编译错误" >> .config
+            echo "CONFIG_QT5_SSL_SUPPORT=n" >> .config
+            echo "CONFIG_QTBASE_SSL=n" >> .config
+            echo "✅ Qt SSL支持已禁用"
+          fi
+          
+          # 重新应用配置
+          echo "重新应用配置..."
+          make defconfig
+        else
+          echo "ℹ️ 未检测到Qt相关包，跳过OpenSSL修复"
+        fi
+        
+        echo "✅ Qt OpenSSL错误修复完成"
+
     - name: 预编译检查和修复
       run: |
         cd "$BUILD_DIR"
@@ -470,4 +515,5 @@ jobs:
           echo "   4. 检查是否包含必要的基础包"
           echo "   5. 尝试减少编译的包数量"
           echo "   6. 检查 feeds.conf.default 配置"
+          echo "   7. 如果Qt相关包报错，尝试在配置中禁用Qt SSL支持"
         fi

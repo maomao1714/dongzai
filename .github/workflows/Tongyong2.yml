@@ -11,26 +11,10 @@ on:
         options:
           - '1'
           - '2'
-      target_arch:
-        description: '目标架构'
-        required: false
-        default: 'x86_64'
-        type: choice
-        options:
-          - 'x86_64'
-          - 'ramips'
-          - 'ar71xx'
-          - 'bcm53xx'
 
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   BUILD_DIR: lede
-  # 新增环境配置
-  CCACHE_DIR: /tmp/ccache
-  STAGING_DIR: /tmp/staging
-  FORCE_UNSAFE_CONFIGURE: 1
-  # SSL配置
-  OPENSSL_VERSION: 1.1.1
 
 jobs:
   build:
@@ -41,36 +25,15 @@ jobs:
     - name: 检查代码和配置
       uses: actions/checkout@v4
 
-    - name: 配置环境变量
-      run: |
-        echo "🔧 配置编译环境..."
-        # 设置环境变量
-        echo "CCACHE_DIR=$CCACHE_DIR" >> $GITHUB_ENV
-        echo "STAGING_DIR=$STAGING_DIR" >> $GITHUB_ENV
-        echo "FORCE_UNSAFE_CONFIGURE=1" >> $GITHUB_ENV
-        
-        # 创建必要目录
-        mkdir -p $CCACHE_DIR $STAGING_DIR
-        
-        # 设置PATH
-        echo "$CCACHE_DIR/bin" >> $GITHUB_PATH
-        echo "/usr/lib/ccache" >> $GITHUB_PATH
-
     - name: 磁盘空间优化
       run: |
         echo "=== 初始磁盘空间 ==="
         df -h
-        
-        # 创建交换文件（如果内存不足）
-        if [ $(free -g | awk '/Mem:/ {print $2}') -lt 8 ]; then
-          echo "内存小于8GB，创建交换文件..."
-          sudo swapoff -a 2>/dev/null || true
-          sudo dd if=/dev/zero of=/swapfile bs=1G count=4
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-        fi
-        
+        sudo swapoff -a
+        sudo dd if=/dev/zero of=/swapfile bs=1G count=2
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
         echo "=== 磁盘和内存状态 ==="
         df -h
         free -h
@@ -83,29 +46,6 @@ jobs:
         sudo rm -rf /usr/local/lib/node_modules 2>/dev/null || true
         sudo rm -rf /var/lib/apt/lists/*
         sudo rm -rf /tmp/*
-        
-        # 清理日志文件
-        sudo find /var/log -type f -name "*.log" -exec truncate -s 0 {} \;
-
-    - name: 安装和配置SSL库
-      run: |
-        echo "🔐 安装和配置SSL库..."
-        sudo apt-get update
-        
-        # 安装SSL开发库
-        sudo apt-get install -y \
-          libssl-dev \
-          openssl \
-          libssl1.1 \
-          ca-certificates
-        
-        # 验证SSL安装
-        echo "=== OpenSSL版本 ==="
-        openssl version
-        pkg-config --modversion openssl
-        
-        # 创建SSL配置
-        sudo update-ca-certificates
 
     - name: 验证配置文件
       run: |
@@ -133,11 +73,6 @@ jobs:
           echo "⚠️ 警告：可能缺少内核版本配置"
         fi
         
-        # 检查SSL相关配置
-        if grep -q "CONFIG_PACKAGE_openssl" .config; then
-          echo "✅ 找到OpenSSL包配置"
-        fi
-        
         # 检查关键包
         CRITICAL_PACKAGES=("base-files" "busybox" "dnsmasq" "dropbear" "firewall" "kmod" "libc" "opkg" "procd" "uci" "ubus")
         for pkg in "${CRITICAL_PACKAGES[@]}"; do
@@ -148,36 +83,15 @@ jobs:
         
         echo "✅ 配置文件检查完成"
 
-    - name: 安装完整编译环境（支持Python 2.7和Python 3）
+    - name: 安装完整编译环境（含报错解决）
       run: |
-        echo "🐍 安装双版本Python环境..."
+        echo "安装完整编译环境..."
         sudo apt-get update
         
-        # 添加Python PPA
+        # 添加Python 2.7支持
         sudo apt-get install -y software-properties-common
         sudo add-apt-repository -y ppa:deadsnakes/ppa
         sudo apt-get update
-        
-        # 安装ccache加速编译
-        sudo apt-get install -y ccache
-        ccache --set-config=max_size=2G
-        ccache -s
-        
-        # 安装Python 2.7和Python 3
-        echo "安装Python 2.7..."
-        sudo apt-get install -y \
-          python2.7 \
-          python2.7-dev \
-          python2.7-minimal \
-          libpython2.7-dev
-        
-        echo "安装Python 3..."
-        sudo apt-get install -y \
-          python3 \
-          python3-dev \
-          python3-pip \
-          python3-venv \
-          python3-setuptools
         
         # 安装完整的编译工具链
         sudo apt-get install -y \
@@ -186,6 +100,9 @@ jobs:
           libncurses5-dev \
           libncursesw5-dev \
           libssl-dev \
+          python2.7 \
+          python3 \
+          python3-pip \
           unzip \
           wget \
           curl \
@@ -211,46 +128,31 @@ jobs:
           texinfo \
           zlib1g-dev \
           gperf \
-          antlr3 \
-          file \
-          time \
-          gcc-multilib \
-          g++-multilib
+          antlr3
         
-        # 创建Python符号链接
-        echo "创建Python符号链接..."
+        # 创建python2符号链接
         sudo ln -sf /usr/bin/python2.7 /usr/bin/python2
-        sudo ln -sf /usr/bin/python3 /usr/bin/python3
-        # 默认使用Python 3，但确保python2命令可用
-        sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 10
-        sudo update-alternatives --install /usr/bin/python python /usr/bin/python2 5
         
-        # 安装pip2
-        curl https://bootstrap.pypa.io/pip/2.7/get-pip.py --output get-pip.py
-        sudo python2 get-pip.py
-        rm get-pip.py
+        # 解决常见报错：安装缺失的库
+        echo "安装可能缺失的库以防止编译报错..."
+        sudo apt-get install -y \
+          lib32z1-dev \
+          libelf-dev \
+          libc6-dev-i386 \
+          gcc-multilib \
+          g++-multilib \
+          libssl-dev \
+          openssl \
+          ca-certificates
         
-        # 验证Python安装
-        echo "=== Python版本验证 ==="
+        # 验证关键工具
+        echo "=== 验证工具版本 ==="
+        gcc --version
         python2 --version
         python3 --version
-        python --version
-        pip2 --version
-        pip3 --version
+        openssl version
         
-        echo "✅ 双版本Python环境配置完成"
-
-    - name: 配置编译缓存
-      run: |
-        echo "⚡ 配置编译缓存..."
-        # 配置ccache
-        ccache --set-config=max_size=2G
-        ccache --set-config=sloppiness=file_macro,locale,time_macros
-        ccache -z
-        
-        # 显示缓存状态
-        echo "=== CCache配置 ==="
-        ccache -p
+        echo "✅ 完整编译环境安装完成"
 
     - name: 克隆源码
       run: |
@@ -259,7 +161,7 @@ jobs:
           rm -rf "$BUILD_DIR"
         fi
         echo "开始克隆源码..."
-        git clone --depth=1 --single-branch --branch master "$REPO_URL" "$BUILD_DIR"
+        git clone --depth=1 --single-branch "$REPO_URL" "$BUILD_DIR"
         if [ $? -ne 0 ]; then
           echo "❌ 源码克隆失败"
           exit 1
@@ -273,29 +175,17 @@ jobs:
           exit 1
         fi
         
-        cd "$BUILD_DIR"
-        
         # 检查仓库根目录是否有feeds.conf.default文件
-        if [ -f "../feeds.conf.default" ]; then
+        if [ -f "feeds.conf.default" ]; then
           echo "📋 找到自定义的feeds.conf.default，将其复制到编译目录"
-          cp "../feeds.conf.default" "feeds.conf.default"
+          cp "feeds.conf.default" "$BUILD_DIR/feeds.conf.default"
           echo "✅ 已应用自定义feeds配置"
           
           # 显示feeds配置预览
           echo "=== feeds配置预览（前20行）==="
-          head -20 "feeds.conf.default"
+          head -20 "$BUILD_DIR/feeds.conf.default"
         else
           echo "ℹ️ 未找到自定义feeds.conf.default，将使用源码默认配置"
-          # 确保存在默认feeds配置
-          if [ ! -f "feeds.conf.default" ]; then
-            echo "创建默认feeds配置"
-            cat > feeds.conf.default << 'EOF'
-src-git-full packages https://git.openwrt.org/feed/packages.git;openwrt-22.03
-src-git-full luci https://git.openwrt.org/project/luci.git;openwrt-22.03
-src-git-full routing https://git.openwrt.org/feed/routing.git;openwrt-22.03
-src-git-full telephony https://git.openwrt.org/feed/telephony.git;openwrt-22.03
-EOF
-          fi
         fi
 
     - name: 更新软件源
@@ -306,9 +196,6 @@ EOF
         fi
         cd "$BUILD_DIR"
         echo "开始更新软件源..."
-        
-        # 设置feeds更新环境
-        export FORCE_UNSAFE_CONFIGURE=1
         
         # 多次尝试更新feeds
         for i in {1..3}; do
@@ -352,51 +239,14 @@ EOF
           exit 1
         fi
         
-        # 设置环境变量
-        export FORCE_UNSAFE_CONFIGURE=1
-        
         echo "应用默认配置..."
         if make defconfig; then
           echo "✅ 配置应用完成"
         else
           echo "❌ 配置应用失败，尝试清理后重试..."
           make clean
-          if make defconfig; then
-            echo "✅ 配置应用完成"
-          else
-            echo "❌ 配置应用彻底失败"
-            exit 1
-          fi
+          make defconfig
         fi
-
-    - name: Python环境测试和修复
-      run: |
-        echo "🔧 测试Python环境兼容性..."
-        
-        # 测试Python 2.7可用性
-        echo "=== 测试Python 2.7 ==="
-        python2 -c "import sys; print('Python 2.7路径:', sys.executable)"
-        python2 -c "import hashlib, zlib, json; print('Python 2.7基础模块加载成功')"
-        
-        # 测试Python 3可用性
-        echo "=== 测试Python 3 ==="
-        python3 -c "import sys; print('Python 3路径:', sys.executable)"
-        python3 -c "import hashlib, zlib, json; print('Python 3基础模块加载成功')"
-        
-        # 检查编译环境中的Python脚本
-        cd "$BUILD_DIR"
-        if [ -d "scripts" ]; then
-          echo "检查Python脚本兼容性..."
-          # 查找使用Python的脚本
-          find scripts -name "*.py" -type f | head -5 | while read script; do
-            echo "检查脚本: $script"
-            head -1 "$script" | grep -q "^#!/usr/bin/env python" && echo "  - 使用env python: $script"
-            head -1 "$script" | grep -q "^#!/usr/bin/python2" && echo "  - 使用python2: $script"
-            head -1 "$script" | grep -q "^#!/usr/bin/python3" && echo "  - 使用python3: $script"
-          done
-        fi
-        
-        echo "✅ Python环境测试完成"
 
     - name: 预编译检查和修复
       run: |
@@ -428,7 +278,7 @@ EOF
         
         echo "✅ 预编译检查完成"
 
-    - name: 编译前清理和准备
+    - name: 编译前清理
       run: |
         echo "=== 编译前磁盘空间 ==="
         df -h
@@ -441,9 +291,6 @@ EOF
           echo "移除.git目录节省空间..."
           rm -rf "$BUILD_DIR/.git"
         fi
-        
-        # 重置ccache统计
-        ccache -z
         
         echo "=== 清理后磁盘空间 ==="
         df -h
@@ -489,14 +336,8 @@ EOF
         df -h
         echo "=== 内存使用情况 ==="
         free -h
-        echo "=== CCache状态 ==="
-        ccache -s
         
         echo "🔧 使用容错模式编译..."
-        
-        # 设置编译环境
-        export FORCE_UNSAFE_CONFIGURE=1
-        export CCACHE_DIR=$CCACHE_DIR
         
         # 分步编译，每一步都检查结果
         COMPILE_STEPS=(
@@ -529,10 +370,6 @@ EOF
               sleep 5
             fi
           done
-          
-          # 显示ccache状态
-          echo "=== CCache统计 ==="
-          ccache -s
         done
         
         echo "🎉 分步编译完成"
@@ -543,9 +380,6 @@ EOF
         THREADS=${{ github.event.inputs.compile_threads }}
         
         echo "执行最终完整编译..."
-        echo "=== 最终CCache状态 ==="
-        ccache -s
-        
         if make -j$THREADS; then
           echo "🎉 编译成功！"
         else
@@ -577,7 +411,6 @@ EOF
           while IFS= read -r file; do
             if [ -f "$file" ] && [ $(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null) -gt 1048576 ]; then
               VALID_FILES=$((VALID_FILES + 1))
-              echo "有效文件: $file ($(du -h "$file" | cut -f1))"
             fi
           done <<< "$FIRMWARE_FILES"
           
@@ -591,8 +424,6 @@ EOF
         
         echo "=== 最终磁盘空间 ==="
         df -h
-        echo "=== 最终CCache统计 ==="
-        ccache -s
 
     - name: 上传固件文件
       if: success()
@@ -621,15 +452,6 @@ EOF
           ${{ env.BUILD_DIR }}/logs/
         retention-days: 7
 
-    - name: 上传ccache统计
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: ccache-stats
-        path: |
-          /tmp/ccache/
-        retention-days: 1
-
     - name: 完成提示
       if: always()
       run: |
@@ -639,11 +461,6 @@ EOF
           echo "   - openwrt-firmware: 完整编译输出"
           echo "   - quick-firmware: 快速下载固件"
           echo "   - build-logs: 编译日志（用于调试）"
-          echo "   - ccache-stats: 编译缓存统计"
-          echo ""
-          echo "⏰ 编译时间信息："
-          echo "   开始时间: ${{ job.steps[0].startTime }}"
-          echo "   结束时间: ${{ job.steps[-1].endTime }}"
         else
           echo "❌ 编译过程出现错误"
           echo "💡 故障排除建议:"
@@ -653,7 +470,4 @@ EOF
           echo "   4. 检查是否包含必要的基础包"
           echo "   5. 尝试减少编译的包数量"
           echo "   6. 检查 feeds.conf.default 配置"
-          echo "   7. 验证SSL库安装是否正确"
-          echo "   8. 检查磁盘空间是否充足"
-          echo "   9. 确认Python 2.7和Python 3环境正常"
         fi
